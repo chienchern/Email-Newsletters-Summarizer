@@ -62,7 +62,7 @@ const STORAGE = {
 
 // --- Google Doc ---
 const DOC = {
-  ID: '1pkvgDMwSNC-Ccw8WLh8ODlLhNY81M96SBvzz--Y4Tjs',
+  ID: PropertiesService.getScriptProperties().getProperty('GOOGLE_DOC_ID'),
   STYLES: {
     header: {
       [DocumentApp.Attribute.FONT_FAMILY]: 'Roboto',

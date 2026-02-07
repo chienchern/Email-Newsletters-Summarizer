@@ -24,6 +24,7 @@ A Google Apps Script that automatically summarizes your email newsletters using 
 1. Go to **Project Settings** (gear icon)
 2. Under **Script Properties**, add:
    - `GEMINI_API_KEY`: Your Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey)
+   - `GOOGLE_DOC_ID`: The ID of your target Google Doc (from the URL: `docs.google.com/document/d/YOUR_DOC_ID/edit`)
 
 ### 3. Update Configuration
 
@@ -35,12 +36,9 @@ const GMAIL = {
   NEWER_THAN: '7d',      // Time range
   // ...
 };
-
-const DOC = {
-  ID: 'your-google-doc-id',  // Target Google Doc ID
-  // ...
-};
 ```
+
+**Note:** The Google Doc ID is now configured in Script Properties (step 2), not in the code.
 
 ### 4. Set Up Gmail Filter
 
@@ -64,6 +62,8 @@ Create a Gmail filter to label incoming newsletters:
 | `GEMINI` | `MAX_OUTPUT_TOKENS` | Summary length limit |
 | `GEMINI` | `DELAY_MS` | Delay between API calls |
 | `PROCESSING` | `MIN_CONTENT_LENGTH` | Skip short emails |
+
+**Note on Gemini Model**: The script uses `gemini-2.5-flash` (line 29 in the code). If this model becomes unavailable, you can update the `API_URL` in the `GEMINI` config to use a different model like `gemini-1.5-flash` or check [Google AI Studio](https://aistudio.google.com) for the latest available models.
 
 ## License
 
