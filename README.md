@@ -44,7 +44,7 @@ const GMAIL = {
 
 Create a Gmail filter to label incoming newsletters:
 1. Gmail Settings → Filters → Create new filter
-2. Set criteria (e.g., `from:*@substack.com`)
+2. Set criteria (e.g., `(list:(substack.com) OR from:(tldrnewsletter.com)) -subject:("payment" OR "receipt" OR "subscription" OR "subscribe" OR "unsubscribed")` in the 'Has the words' field)
 3. Apply label (e.g., `Newsletters`)
 
 ### 5. Run Manually or Schedule
