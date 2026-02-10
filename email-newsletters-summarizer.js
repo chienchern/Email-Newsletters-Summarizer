@@ -27,23 +27,64 @@ const GMAIL = {
 // --- Gemini API ---
 const GEMINI = {
   API_URL: 'https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent',
-  MAX_OUTPUT_TOKENS: 2048,
+  MAX_OUTPUT_TOKENS: 4096,
   DELAY_MS: 2000,
   PROMPT: `
-You are an executive assistant. Distill this newsletter into key takeaways only.
+You are an executive assistant. Distill this newsletter into key takeaways and classify it by theme.
 
 INPUT:
 {{CONTENT}}
 
 RULES:
-- Maximum 10 bullet points total
+- Maximum 5 bullet points total
 - Each bullet: 1-2 sentences max
 - Bold the topic (e.g., "**Topic:** key insight")
 - Only include genuinely important or actionable information
 - Skip fluff, intros, outros, and promotional content
-- If nothing valuable, return "STATUS: SKIP"
+- Classify the newsletter into ONE theme category
 
-Be ruthlessly concise. Output Markdown.
+OUTPUT FORMAT (respond with valid JSON - no markdown code blocks):
+{
+  "theme": "EXACTLY one of these strings: Tech News | Product Updates | Industry Analysis | AI & ML | Business Strategy | Developer Tools | Marketing | Finance | Design | Other",
+  "summary": "Markdown formatted bullets here"
+}
+
+JSON FORMATTING - CRITICAL:
+- Output ONLY the JSON object, no markdown code blocks
+- Properly escape quotes in summary text (use \" for quotes inside strings)
+- Keep newlines as \n within the JSON string
+- Test that your output is valid JSON before returning
+
+THEME CLASSIFICATION - CRITICAL:
+Use the EXACT theme string from the list above. Do NOT paraphrase, rephrase, or create variations.
+Examples:
+- ✅ "Tech News" (correct)
+- ❌ "Tech Headlines" (incorrect - will cause misclassification)
+- ❌ "Technology News" (incorrect)
+
+SPECIAL CASES:
+- If nothing valuable, return: {"theme": "SKIP", "summary": "STATUS: SKIP"}
+
+Be ruthlessly concise.
+`,
+  SYNTHESIS_PROMPT: `
+You are an executive assistant. Synthesize key insights from multiple newsletter summaries on a common theme.
+
+INPUT SUMMARIES:
+{{SUMMARIES}}
+
+RULES:
+- Maximum 7 bullet points total
+- Each bullet: 1-2 sentences max
+- Bold the topic (e.g., "**Topic:** key insight")
+- Find common threads across newsletters - don't just concatenate
+- If multiple newsletters mention the same topic, synthesize into ONE bullet
+- Prioritize the most important/actionable information
+- Skip redundant or minor details
+
+OUTPUT: Markdown formatted bullets only (no theme classification needed)
+
+Be ruthlessly concise. This is an executive summary of summaries.
 `,
 };
 
@@ -58,6 +99,47 @@ const PROCESSING = {
 const STORAGE = {
   PROCESSED_IDS_KEY: 'PROCESSED_MESSAGE_IDS',
   MAX_STORED_IDS: 500,
+};
+
+// --- Article Collection ---
+const ARTICLE_COLLECTION = {
+  THEME_ORDER: [
+    'Tech News',
+    'AI & ML',
+    'Product Updates',
+    'Developer Tools',
+    'Business Strategy',
+    'Industry Analysis',
+    'Marketing',
+    'Finance',
+    'Design',
+    'Other'
+  ],
+  DEFAULT_THEME: 'Other',
+  THEME_KEYWORDS: {
+    // For fuzzy matching when AI deviates from exact theme names
+    'tech': 'Tech News',
+    'technology': 'Tech News',
+    'headlines': 'Tech News',
+    'ai': 'AI & ML',
+    'artificial intelligence': 'AI & ML',
+    'machine learning': 'AI & ML',
+    'ml': 'AI & ML',
+    'product': 'Product Updates',
+    'release': 'Product Updates',
+    'launch': 'Product Updates',
+    'tool': 'Developer Tools',
+    'developer': 'Developer Tools',
+    'business': 'Business Strategy',
+    'strategy': 'Business Strategy',
+    'industry': 'Industry Analysis',
+    'analysis': 'Industry Analysis',
+    'market': 'Industry Analysis',
+    'marketing': 'Marketing',
+    'finance': 'Finance',
+    'financial': 'Finance',
+    'design': 'Design'
+  }
 };
 
 // --- Google Doc ---
@@ -122,13 +204,54 @@ function runDailyDigest() {
     return;
   }
 
-  const newlyProcessedIds = processThreads(threads, body, processedIds, apiKey);
+  // PHASE 1: Collect phase
+  console.log('\n--- Phase 1: Collecting articles ---');
+  const collectedArticles = processThreads(threads, processedIds, apiKey);
 
+  if (collectedArticles.length === 0) {
+    console.log('No new summaries to insert');
+    insertEmptyState(body);
+    doc.saveAndClose();
+    return;
+  }
+
+  // PHASE 2: Group by theme
+  console.log('\n--- Phase 2: Grouping by theme ---');
+  const groupedByTheme = groupArticlesByTheme(collectedArticles);
+  console.log(`Grouped into ${Object.keys(groupedByTheme).length} themes`);
+
+  // PHASE 3: Synthesize cross-newsletter summaries (NEW)
+  console.log('\n--- Phase 3: Synthesizing theme summaries ---');
+  const synthesizedThemes = {};
+
+  for (const [theme, articles] of Object.entries(groupedByTheme)) {
+    const synthesizedSummary = synthesizeThemeSummary(apiKey, articles, theme);
+    synthesizedThemes[theme] = {
+      articles: articles,
+      synthesizedSummary: synthesizedSummary
+    };
+
+    // Add delay between synthesis calls
+    if (synthesizedSummary) {
+      Utilities.sleep(GEMINI.DELAY_MS);
+    }
+  }
+
+  // PHASE 4: Insert individual articles first
+  console.log('\n--- Phase 4: Inserting individual articles ---');
+  insertIndividualArticles(body, collectedArticles);
+
+  // PHASE 5: Insert master summary (appears at top)
+  console.log('\n--- Phase 5: Inserting master summary ---');
+  insertMasterSummary(body, synthesizedThemes);
+
+  // Extract message IDs for persistence
+  const newlyProcessedIds = collectedArticles.map(a => a.messageId);
   if (newlyProcessedIds.length > 0) {
     saveProcessedIds(processedIds, newlyProcessedIds);
   }
 
-  console.log(`=== Completed: ${newlyProcessedIds.length} emails summarized ===`);
+  console.log(`\n=== Completed: ${collectedArticles.length} emails summarized across ${Object.keys(synthesizedThemes).length} themes ===`);
   doc.saveAndClose();
 }
 
@@ -136,24 +259,24 @@ function runDailyDigest() {
 // THREAD PROCESSING
 // ====================
 
-function processThreads(threads, body, processedIds, apiKey) {
-  const newlyProcessedIds = [];
+function processThreads(threads, processedIds, apiKey) {
+  const collectedArticles = [];
   const total = threads.length;
 
   for (let i = 0; i < threads.length; i++) {
     const thread = threads[i];
     const progress = `[${i + 1}/${total}]`;
-    const result = processSingleThread(thread, body, processedIds, apiKey, progress);
+    const result = processSingleThread(thread, processedIds, apiKey, progress);
 
-    if (result.processed) {
-      newlyProcessedIds.push(result.messageId);
+    if (result.article) {
+      collectedArticles.push(result.article);
     }
   }
 
-  return newlyProcessedIds;
+  return collectedArticles;
 }
 
-function processSingleThread(thread, body, processedIds, apiKey, progress) {
+function processSingleThread(thread, processedIds, apiKey, progress) {
   const msg = getLatestMessage(thread);
   const subject = msg.getSubject();
   const messageId = msg.getId();
@@ -162,55 +285,62 @@ function processSingleThread(thread, body, processedIds, apiKey, progress) {
 
   if (processedIds.has(messageId)) {
     console.log(`  ↳ Skipped: already processed`);
-    return { processed: false };
+    return {};
   }
 
   if (isAdminEmail(subject)) {
     console.log(`  ↳ Skipped: admin/transactional email`);
-    return { processed: false };
+    return {};
   }
 
   const content = extractEmailContent(msg);
   if (content.length < PROCESSING.MIN_CONTENT_LENGTH) {
     console.log(`  ↳ Skipped: content too short (${content.length} chars)`);
-    return { processed: false };
+    return {};
   }
 
   try {
     console.log(`  ↳ Calling Gemini API...`);
-    const result = callGeminiAPI(apiKey, content);
+    const prompt = buildNewsletterSummaryPrompt(content);
+    const result = callGeminiAPIWithPrompt(apiKey, prompt);
 
     if (result.error) {
       console.error(`  ↳ API error: ${result.error}`);
-      return { processed: false };
+      return {};
     }
 
-    if (result.summary.includes("STATUS: SKIP")) {
+    // NEW: Parse JSON response
+    const parsed = parseApiJsonResponse(result.summary);
+
+    if (!parsed || parsed.theme === 'SKIP') {
       console.log(`  ↳ Skipped: marked as skip by API`);
-      return { processed: false };
+      return {};
     }
 
-    if (result.summary.length < PROCESSING.MIN_SUMMARY_LENGTH) {
-      console.log(`  ↳ Skipped: summary too short (${result.summary.length} chars)`);
-      return { processed: false };
+    if (parsed.summary.length < PROCESSING.MIN_SUMMARY_LENGTH) {
+      console.log(`  ↳ Skipped: summary too short`);
+      return {};
     }
-
-    insertArticleBlock(body, {
-      subject: subject,
-      sender: msg.getFrom(),
-      permalink: thread.getPermalink(),
-      summary: result.summary
-    });
 
     thread.markRead();
-    console.log(`  ↳ Success: summarized (${result.summary.length} chars)`);
+    console.log(`  ↳ Success: theme="${parsed.theme}", summary length=${parsed.summary.length} chars`);
     Utilities.sleep(GEMINI.DELAY_MS);
 
-    return { processed: true, messageId };
+    return {
+      article: {
+        messageId: messageId,
+        subject: subject,
+        sender: msg.getFrom(),
+        permalink: thread.getPermalink(),
+        theme: parsed.theme,
+        summary: parsed.summary,
+        timestamp: msg.getDate()
+      }
+    };
 
   } catch (e) {
     console.error(`  ↳ Error: ${e.message}`);
-    return { processed: false };
+    return {};
   }
 }
 
@@ -262,6 +392,113 @@ function isAdminEmail(subject) {
 }
 
 // ====================
+// ARTICLE COLLECTION & GROUPING
+// ====================
+
+function groupArticlesByTheme(articles) {
+  const grouped = {};
+
+  // Initialize all themes
+  ARTICLE_COLLECTION.THEME_ORDER.forEach(theme => {
+    grouped[theme] = [];
+  });
+
+  // Group articles
+  articles.forEach(article => {
+    const theme = article.theme || ARTICLE_COLLECTION.DEFAULT_THEME;
+    if (!grouped[theme]) {
+      grouped[theme] = [];
+    }
+    grouped[theme].push(article);
+  });
+
+  // Sort within each theme by timestamp (newest first)
+  Object.keys(grouped).forEach(theme => {
+    grouped[theme].sort((a, b) => b.timestamp - a.timestamp);
+  });
+
+  // Remove empty themes
+  const result = {};
+  ARTICLE_COLLECTION.THEME_ORDER.forEach(theme => {
+    if (grouped[theme] && grouped[theme].length > 0) {
+      result[theme] = grouped[theme];
+    }
+  });
+
+  return result;
+}
+
+function insertMasterSummary(body, synthesizedThemes) {
+  const themes = Object.keys(synthesizedThemes);
+  if (themes.length === 0) return;
+
+  // Insert divider before individual articles
+  body.insertHorizontalRule(1);
+
+  // Insert theme sections (in reverse since we prepend)
+  themes.reverse().forEach(theme => {
+    const themeData = synthesizedThemes[theme];
+
+    // Insert synthesized bullets
+    if (themeData.synthesizedSummary) {
+      insertMarkdownContent(body, themeData.synthesizedSummary, 1);
+    } else {
+      // Fallback: list article subjects if synthesis failed
+      themeData.articles.slice().reverse().forEach(article => {
+        const bullet = body.insertListItem(1, article.subject);
+        bullet.setGlyphType(DocumentApp.GlyphType.HOLLOW_BULLET);
+        bullet.setAttributes(DOC.STYLES.body);
+      });
+    }
+
+    // Insert theme header
+    const count = themeData.articles.length;
+    const countLabel = count === 1 ? '1 newsletter' : `${count} newsletters`;
+    const themeHeader = body.insertParagraph(1, `${theme} (${countLabel})`);
+    themeHeader.setHeading(DocumentApp.ParagraphHeading.HEADING3);
+    themeHeader.setAttributes(DOC.STYLES.header);
+  });
+
+  // Insert master summary title
+  const title = body.insertParagraph(1, '🧭 Master Summary');
+  title.setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  title.setAttributes(DOC.STYLES.title);
+}
+
+function insertIndividualArticles(body, articles) {
+  const sortedArticles = sortArticlesForDisplay(articles);
+
+  // Insert in reverse (prepending at index 1, after master summary)
+  sortedArticles.reverse().forEach(article => {
+    insertSingleArticle(body, article);
+  });
+}
+
+function sortArticlesForDisplay(articles) {
+  const themeOrder = ARTICLE_COLLECTION.THEME_ORDER;
+
+  return articles.sort((a, b) => {
+    // Sort by theme order first
+    const themeIndexA = themeOrder.indexOf(a.theme);
+    const themeIndexB = themeOrder.indexOf(b.theme);
+
+    if (themeIndexA !== themeIndexB) {
+      return themeIndexA - themeIndexB;
+    }
+
+    // Then by timestamp (newest first within theme)
+    return b.timestamp - a.timestamp;
+  });
+}
+
+function insertSingleArticle(body, article) {
+  body.insertHorizontalRule(1);
+  insertFooter(body, article.sender, article.permalink);
+  insertMarkdownContent(body, article.summary, 1);
+  insertTitle(body, article.subject);
+}
+
+// ====================
 // DOCUMENT INSERTION
 // ====================
 
@@ -272,7 +509,7 @@ function insertDateHeader(body) {
     day: 'numeric'
   });
 
-  const header = body.insertParagraph(0, `\n📅 INTELLIGENCE BRIEF: ${dateStr}`);
+  const header = body.insertParagraph(0, `📅 INTELLIGENCE BRIEF: ${dateStr}`);
   header.setHeading(DocumentApp.ParagraphHeading.HEADING1);
   header.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
   header.setAttributes(DOC.STYLES.header);
@@ -282,14 +519,6 @@ function insertEmptyState(body) {
   body.insertParagraph(1, "No new updates.")
     .setAlignment(DocumentApp.HorizontalAlignment.CENTER)
     .setItalic(true);
-}
-
-function insertArticleBlock(body, article) {
-  // Insert in reverse order since we're prepending at index 1
-  body.insertHorizontalRule(1);
-  insertFooter(body, article.sender, article.permalink);
-  insertMarkdownContent(body, article.summary, 1);
-  insertTitle(body, article.subject);
 }
 
 function insertTitle(body, subject) {
@@ -381,14 +610,17 @@ function applyBoldRanges(element, boldRanges, text) {
 // GEMINI API
 // ====================
 
-function callGeminiAPI(key, text) {
-  const prompt = buildPrompt(text);
+function callGeminiAPIWithPrompt(key, prompt) {
   const response = makeApiRequest(key, prompt);
   return parseApiResponse(response);
 }
 
-function buildPrompt(text) {
-  return GEMINI.PROMPT.replace('{{CONTENT}}', text);
+function buildNewsletterSummaryPrompt(content) {
+  return GEMINI.PROMPT.replace('{{CONTENT}}', content);
+}
+
+function buildMasterSummaryPrompt(summaries) {
+  return GEMINI.SYNTHESIS_PROMPT.replace('{{SUMMARIES}}', summaries);
 }
 
 function makeApiRequest(key, prompt) {
@@ -428,8 +660,15 @@ function parseApiResponse(response) {
       return { summary: '', error: json.error.message };
     }
 
-    if (json.candidates?.[0]?.finishReason === 'SAFETY') {
+    const finishReason = json.candidates?.[0]?.finishReason;
+
+    if (finishReason === 'SAFETY') {
       return { summary: '', error: 'Content blocked by safety filters' };
+    }
+
+    if (finishReason === 'MAX_TOKENS') {
+      console.warn('⚠️ Response truncated due to MAX_TOKENS limit');
+      // Continue processing but log warning
     }
 
     const summary = json.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -442,6 +681,166 @@ function parseApiResponse(response) {
   } catch (e) {
     return { summary: '', error: `Request failed: ${e.message}` };
   }
+}
+
+function findBestThemeMatch(aiTheme) {
+  const normalized = aiTheme.toLowerCase().trim();
+
+  // Try exact match first (case-insensitive)
+  const exactMatch = ARTICLE_COLLECTION.THEME_ORDER.find(
+    t => t.toLowerCase() === normalized
+  );
+  if (exactMatch) return exactMatch;
+
+  // Try keyword matching
+  for (const [keyword, theme] of Object.entries(ARTICLE_COLLECTION.THEME_KEYWORDS)) {
+    if (normalized.includes(keyword)) {
+      console.warn(`Fuzzy matched "${aiTheme}" → "${theme}" via keyword "${keyword}"`);
+      return theme;
+    }
+  }
+
+  // No match found
+  console.warn(`No match for theme "${aiTheme}", using default`);
+  return ARTICLE_COLLECTION.DEFAULT_THEME;
+}
+
+function fixUnescapedQuotesInJson(jsonText) {
+  // Fix malformed JSON by extracting fields and reconstructing
+  // This handles cases where the AI returns unescaped quotes in the summary
+
+  try {
+    // Extract theme field
+    const themeMatch = jsonText.match(/"theme"\s*:\s*"([^"]+)"/);
+    if (!themeMatch) {
+      return jsonText; // Can't fix, return as-is
+    }
+    const theme = themeMatch[1];
+
+    // Extract summary field - more lenient pattern
+    // Look for "summary": " and then grab everything until the final "}
+    const summaryMatch = jsonText.match(/"summary"\s*:\s*"([\s\S]*)"[\s\n]*}/);
+    if (!summaryMatch) {
+      return jsonText; // Can't fix, return as-is
+    }
+
+    let summary = summaryMatch[1];
+
+    // Remove any trailing quote and whitespace that might be part of the closing
+    summary = summary.replace(/"\s*$/, '');
+
+    // Now reconstruct valid JSON with properly escaped summary
+    const fixedJson = {
+      theme: theme,
+      summary: summary
+    };
+
+    return JSON.stringify(fixedJson);
+
+  } catch (e) {
+    console.warn('Could not fix malformed JSON: ' + e.message);
+    return jsonText;
+  }
+}
+
+function parseApiJsonResponse(responseText) {
+  try {
+    // Strip markdown code blocks if present
+    let cleanedText = responseText.trim();
+
+    // Remove ```json and ``` markers
+    if (cleanedText.startsWith('```json')) {
+      cleanedText = cleanedText.replace(/^```json\s*\n?/, '').replace(/\n?```\s*$/, '');
+    } else if (cleanedText.startsWith('```')) {
+      cleanedText = cleanedText.replace(/^```\s*\n?/, '').replace(/\n?```\s*$/, '');
+    }
+
+    // First attempt: try parsing as-is
+    let json;
+    try {
+      json = JSON.parse(cleanedText.trim());
+    } catch (parseError) {
+      // Second attempt: fix unescaped quotes in summary field
+      console.warn('Initial JSON parse failed, attempting to fix unescaped quotes...');
+      cleanedText = fixUnescapedQuotesInJson(cleanedText);
+      json = JSON.parse(cleanedText.trim());
+    }
+
+    // Validate JSON structure
+    if (!json || typeof json !== 'object') {
+      console.error('API response is not a JSON object');
+      console.error('Response preview: ' + responseText.substring(0, 200));
+      return null;
+    }
+
+    if (!json.theme || !json.summary) {
+      console.error('Invalid JSON structure - missing theme or summary');
+      console.error('Received: ' + JSON.stringify(json).substring(0, 200));
+      return null;
+    }
+
+    // Ensure summary is a string
+    const summary = typeof json.summary === 'string'
+      ? json.summary.trim()
+      : String(json.summary).trim();
+
+    const theme = String(json.theme).trim();
+
+    // Handle SKIP special case
+    if (theme === 'SKIP') {
+      return { theme: 'SKIP', summary: summary };
+    }
+
+    // Use fuzzy matching to find best theme
+    const matchedTheme = findBestThemeMatch(theme);
+
+    return { theme: matchedTheme, summary: summary };
+
+  } catch (e) {
+    console.error(`Failed to parse JSON: ${e.message}`);
+    console.error(`Response length: ${responseText.length} characters`);
+    console.error('Response preview (first 500 chars): ' + responseText.substring(0, 500));
+    console.error('Response end (last 200 chars): ' + responseText.substring(Math.max(0, responseText.length - 200)));
+
+    // Fallback for non-JSON responses
+    if (responseText.includes('STATUS: SKIP')) {
+      return { theme: 'SKIP', summary: responseText };
+    }
+
+    // Last resort: use the raw response as summary
+    return {
+      theme: ARTICLE_COLLECTION.DEFAULT_THEME,
+      summary: responseText.replace(/```json|```/g, '').trim()
+    };
+  }
+}
+
+function synthesizeThemeSummary(apiKey, articles, themeName) {
+  if (articles.length === 0) return null;
+
+  // If only one article, return its summary directly (no need to synthesize)
+  if (articles.length === 1) {
+    return articles[0].summary;
+  }
+
+  // Combine all summaries with newsletter subject as context
+  const combinedSummaries = articles.map(a =>
+    `Newsletter: "${a.subject}"\n${a.summary}`
+  ).join('\n\n---\n\n');
+
+  const prompt = buildMasterSummaryPrompt(combinedSummaries);
+
+  console.log(`  Synthesizing ${articles.length} articles for theme "${themeName}"...`);
+
+  const result = callGeminiAPIWithPrompt(apiKey, prompt);
+
+  if (result.error) {
+    console.error(`  Synthesis error: ${result.error}`);
+    return null;
+  }
+
+  console.log(`  Synthesis complete (${result.summary.length} chars)`);
+  return result.summary;
 }
 
 // ====================

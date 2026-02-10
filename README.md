@@ -6,6 +6,8 @@ A Google Apps Script that automatically summarizes your email newsletters using 
 
 - Fetches newsletters from Gmail by label
 - Summarizes content using Gemini 2.5 Flash API
+- Groups newsletters by theme (Tech News, AI & ML, Business Strategy, etc.)
+- Generates a **Master Summary** synthesizing key insights across all newsletters by theme
 - Outputs formatted summaries to Google Docs
 - Skips admin/transactional emails automatically
 - Tracks processed emails to avoid duplicates
