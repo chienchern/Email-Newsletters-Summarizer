@@ -67,6 +67,58 @@ Create a Gmail filter to label incoming newsletters:
 
 **Note on Gemini Model**: The script uses `gemini-2.5-flash` (line 29 in the code). If this model becomes unavailable, you can update the `API_URL` in the `GEMINI` config to use a different model like `gemini-1.5-flash` or check [Google AI Studio](https://aistudio.google.com) for the latest available models.
 
+## Example Output
+
+Each daily run prepends a new entry to the top of your Google Doc:
+
+```
+📅 INTELLIGENCE BRIEF: Monday, Feb 9
+
+🧭 Master Summary
+
+  AI & ML (2 newsletters)
+  • LLM Efficiency: New quantization techniques cut model size 40% with
+    minimal quality loss, making local deployment more viable.
+  • Agent Frameworks: LangGraph and AutoGen emerging as leading patterns
+    for multi-agent orchestration.
+
+  Tech News (1 newsletter)
+  • Browser Competition: Firefox market share ticked up for the first
+    time in years following Chrome's Manifest V3 rollout.
+
+────────────────────────────────────────
+
+  The Batch — AI Weekly
+
+  • GPT-4o Fine-tuning: OpenAI opened fine-tuning for GPT-4o; strong
+    results with fewer than 1,000 domain-specific examples.
+  • Mistral 8x22B: New MoE model matches GPT-4 on key benchmarks at a
+    fraction of the inference cost.
+
+  Source: editor@deeplearning.ai | Open Email
+
+────────────────────────────────────────
+
+  TLDR Newsletter
+
+  • Arc Browser Acquired: The Browser Company sold Arc; future of the
+    product uncertain.
+  • Vercel AI SDK 3.0: New streaming primitives simplify real-time AI
+    interfaces in Next.js.
+
+  Source: dan@tldrnewsletter.com | Open Email
+
+────────────────────────────────────────
+```
+
+If no new newsletters are found, the entry reads:
+
+```
+📅 INTELLIGENCE BRIEF: Monday, Feb 9
+
+  No new newsletters today. (Checked at 9:00 AM PST)
+```
+
 ## License
 
 MIT
