@@ -5,7 +5,7 @@
 // --- Gmail ---
 const GMAIL = {
   LABEL: 'Newsletters',
-  NEWER_THAN: '8d',
+  NEWER_THAN: '1d',
   MAX_THREADS: 50,
   EXCLUDE_SUBJECTS: [
     // Add phrases to exclude from Gmail search
@@ -516,7 +516,12 @@ function insertDateHeader(body) {
 }
 
 function insertEmptyState(body) {
-  body.insertParagraph(1, "No new updates.")
+  const timeStr = new Date().toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  });
+  body.insertParagraph(1, `No new newsletters today. (Checked at ${timeStr})`)
     .setAlignment(DocumentApp.HorizontalAlignment.CENTER)
     .setItalic(true);
 }
