@@ -35,7 +35,7 @@ Edit the constants at the top of the script:
 ```javascript
 const GMAIL = {
   LABEL: 'Newsletters',  // Your Gmail label
-  NEWER_THAN: '7d',      // Time range
+  NEWER_THAN: '1d',      // Time range (recommended: 1d for daily runs)
   // ...
 };
 ```
@@ -59,7 +59,7 @@ Create a Gmail filter to label incoming newsletters:
 | Section | Option | Description |
 |---------|--------|-------------|
 | `GMAIL` | `LABEL` | Gmail label to search |
-| `GMAIL` | `NEWER_THAN` | Time range (e.g., `7d`, `30d`) |
+| `GMAIL` | `NEWER_THAN` | Time range (e.g., `1d` for daily runs) |
 | `GMAIL` | `MAX_THREADS` | Max emails per run |
 | `GEMINI` | `MAX_OUTPUT_TOKENS` | Summary length limit |
 | `GEMINI` | `DELAY_MS` | Delay between API calls |
