@@ -1,4 +1,4 @@
-# Email Newsletters Summarizer
+# Email Newsletters Summarizer (MVP)
 
 A Google Apps Script that automatically summarizes your email newsletters using Gemini AI and outputs them to a Google Doc.
 
