@@ -2,6 +2,14 @@
 
 A Google Apps Script that automatically summarizes your email newsletters using Gemini AI and outputs them to a Google Doc.
 
+## Table of Contents
+
+- [Features](#features)
+- [Setup](#setup)
+- [Configuration Options](#configuration-options)
+- [Example Output](#example-output)
+- [License](#license)
+
 ## Features
 
 - Fetches newsletters from Gmail by label
